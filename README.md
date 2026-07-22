@@ -212,6 +212,7 @@ pytest
 
 - [Architecture](ARCHITECTURE.md)
 - [Changelog](CHANGELOG.md)
+- [Daily development updates](docs/DAILY_UPDATES.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security](SECURITY.md)
 - [Examples](examples)
