@@ -1,0 +1,24 @@
+{
+  "commands": [
+    {
+      "id": "generate",
+      "command": "python generate.py",
+      "timeout": 300,
+      "cache": false
+    },
+    {
+      "id": "inspect",
+      "command": "git diff --stat",
+      "depends_on": ["generate"]
+    },
+    {
+      "id": "review",
+      "command": "git diff --check",
+      "depends_on": ["generate"]
+    }
+  ],
+  "parallel": true,
+  "cache": true,
+  "fail_fast": true,
+  "max_output_chars": 5000
+}
