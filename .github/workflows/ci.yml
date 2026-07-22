@@ -41,4 +41,13 @@ jobs:
         run: python -m compileall -q __init__.py classifier.py compressor.py executor.py schemas.py state.py
 
       - name: Run tests
-        run: pytest
+        run: pytest 2>&1 | tee pytest.log
+
+      - name: Upload pytest failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-${{ matrix.python-version }}
+          path: pytest.log
+          if-no-files-found: error
+          retention-days: 3
