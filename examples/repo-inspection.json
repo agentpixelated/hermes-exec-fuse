@@ -1,0 +1,25 @@
+{
+  "commands": [
+    {
+      "id": "status",
+      "command": "git status --short"
+    },
+    {
+      "id": "diff",
+      "command": "git diff --stat"
+    },
+    {
+      "id": "todos",
+      "command": "rg TODO"
+    },
+    {
+      "id": "collect",
+      "command": "pytest --collect-only -q",
+      "timeout": 120
+    }
+  ],
+  "parallel": true,
+  "cache": true,
+  "fail_fast": false,
+  "max_output_chars": 4000
+}
