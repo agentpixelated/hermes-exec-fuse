@@ -30,4 +30,7 @@ target-version = "py310"
 select = ["E", "F", "I", "B"]
 
 [tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["E402"]
+"benchmarks/benchmark_scheduler.py" = ["E402"]
+"state.py" = ["E501"]
 "tests/test_hermes_exec_fuse.py" = ["E402"]
