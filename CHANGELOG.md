@@ -1,33 +1,39 @@
 # Changelog
 
-All notable changes to Hermes Exec Fuse are documented here.
+All notable changes to Hermes Exec Fuse are documented here. The project follows [Semantic Versioning](https://semver.org/); during `0.x`, minor releases may contain behavioral changes.
 
-The project follows [Semantic Versioning](https://semver.org/). During the `0.x` series, minor versions may contain behavioral changes.
+## 0.2.0 — 2026-07-24
 
-## Unreleased
+### Added
+
+- `exec_fuse_clear_cache` for explicit session cache invalidation and optional metric reset.
+- Environment-based runtime configuration for TTL, cache bounds, worker count, output budget, direct guard, and model hint injection.
+- Structured terminal failure normalization for `ok`, `success`, exit-code fields, error fields, and failure statuses.
+- Execution metrics by command class, success/failure counters, generation bumps, reuse rate, compression ratio, and average duration.
+- Config snapshot in `exec_fuse_stats`.
+- Scheduler benchmark using a deterministic delayed fake terminal backend.
+- Python 3.13 CI coverage.
 
 ### Changed
 
-- Migrated the plugin from the `mcp-radar` incubator into a dedicated standalone repository.
-- Moved the Hermes plugin manifest and runtime files to the repository root for direct installation.
-- Updated development commands, CI paths, installation instructions, and examples for the standalone layout.
+- Parallel worker count and default output budget are now configurable.
+- Failed command results include `failure_reason` and structured `exit_code` when available.
+- Batch summaries include classifications and total execution duration.
+- Root plugin import is robust when Pytest collects the standalone repository's `__init__.py` directly.
 
 ### Fixed
 
-- Failed direct read-only terminal results are recorded in metrics but are not inserted into the reuse cache.
+- Non-zero structured terminal exit codes now fail dependencies instead of being treated as successful output.
+- A TTL of zero now cleanly disables cache reuse.
 
 ## 0.1.0 — 2026-07-22
 
 ### Added
 
-- `exec_fuse` tool for batches of up to 24 foreground terminal commands.
-- Conservative `read_only`, `mutating`, and `unknown` command classification.
-- Bounded parallel execution for independent read-only commands.
-- Explicit dependency ordering with `depends_on` and cycle detection.
-- Normalized exact read-only deduplication inside a batch.
-- Session-scoped LRU result cache with a five-minute TTL.
-- Workspace-generation invalidation after mutating or unknown operations.
-- Direct-terminal duplicate-call guard through Hermes lifecycle hooks.
-- Deterministic terminal-result compaction with diagnostic-line preservation.
-- `exec_fuse_stats` for execution, reuse, and estimated character-savings metrics.
-- Automated tests and Python 3.10–3.12 CI.
+- `exec_fuse` for batches of up to 24 foreground terminal commands.
+- Conservative `read_only`, `mutating`, and `unknown` classification.
+- Bounded parallel execution and dependency ordering.
+- Exact read-only deduplication and session-scoped cache reuse.
+- Workspace-generation invalidation and direct-terminal duplicate guard.
+- Deterministic output compaction and `exec_fuse_stats`.
+- Standalone installation layout, documentation, tests, and Python 3.10–3.12 CI.
