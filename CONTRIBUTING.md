@@ -1,81 +1,54 @@
 # Contributing to Hermes Exec Fuse
 
-Hermes Exec Fuse is intentionally small, conservative, and auditable. Contributions are welcome when they improve correctness, compatibility, measurement, or usability without weakening the execution boundary.
+Hermes Exec Fuse is intentionally conservative and auditable. Contributions are welcome when they improve correctness, compatibility, measurement, or usability without weakening the Hermes execution boundary.
 
 ## Development setup
 
 ```bash
 python -m pip install --upgrade pytest ruff
-ruff check __init__.py classifier.py compressor.py executor.py schemas.py state.py tests
-python -m compileall -q __init__.py classifier.py compressor.py executor.py schemas.py state.py
+ruff check __init__.py classifier.py compressor.py config.py executor.py \
+  result_status.py schemas.py state.py tests benchmarks
+python -m compileall -q __init__.py classifier.py compressor.py config.py \
+  executor.py result_status.py schemas.py state.py
 pytest
+python benchmarks/benchmark_scheduler.py
 ```
 
-Python 3.10 is the minimum supported version. CI also runs on Python 3.11 and 3.12.
+Python 3.10 is the minimum supported version. CI runs through Python 3.13.
 
 ## Design constraints
 
 Runtime changes must preserve:
 
-1. Every actual shell command is executed through `ctx.dispatch_tool("terminal", ...)`.
+1. Every actual command uses `ctx.dispatch_tool("terminal", ...)`.
 2. Only positively recognized read-only commands may be cached, deduplicated, or run concurrently.
-3. Mutating and unknown commands remain sequential and invalidate the workspace generation.
-4. Cache state stays bounded, session-scoped, in-memory, and thread-safe.
-5. Output compaction remains deterministic and preserves diagnostic evidence.
-6. Plugin hooks accept `**kwargs` for Hermes forward compatibility.
-7. A plugin failure cannot crash the parent agent loop.
+3. Mutating and unknown commands remain sequential and invalidate workspace state.
+4. Cache state remains bounded, session-scoped, in-memory, and thread-safe.
+5. Output compaction remains deterministic and diagnostic-first.
+6. Hooks and handlers accept `**kwargs` for forward compatibility.
+7. Plugin failures return structured errors rather than crashing the agent loop.
+8. Environment configuration remains bounded and non-secret.
 
-Read [ARCHITECTURE.md](ARCHITECTURE.md) before changing scheduling, classification, invalidation, or hook behavior.
+Read [ARCHITECTURE.md](ARCHITECTURE.md) before changing scheduling, classification, invalidation, hooks, result normalization, or cache identity.
 
-## Classifier changes
+## Test expectations
 
-Classifier changes require extra care because a false positive is more dangerous than a false negative.
+Classifier changes require safe forms plus adversarial neighboring cases: mutating flags, redirection, substitutions, pipelines, malformed quoting, and ambiguous variants.
 
-For every newly recognized read-only command, test:
+Terminal-result changes should cover all supported structured fields and must avoid guessing failure from ordinary output text.
 
-- the intended safe form;
-- mutating flags or subcommands;
-- shell redirection;
-- command substitution;
-- pipelines and compound commands;
-- malformed quoting;
-- closely related unknown forms.
-
-When safety is ambiguous, return `unknown`.
-
-## Cache and invalidation changes
-
-A new cache input must be included in the fingerprint. A new mutation surface must advance the workspace generation.
-
-Tests should demonstrate both reuse while generation is unchanged and a cache miss after the relevant mutation.
-
-Do not persist raw terminal output without a separate design and security review.
-
-## Output-compaction changes
-
-Compaction must remain deterministic, bounded, and diagnostic-first. Cover short output, important middle lines, ANSI sequences, JSON-like results, exact boundaries, repeated lines, and empty output.
+Cache changes must demonstrate both reuse in one generation and a miss after invalidation. Configuration changes need default, invalid, and boundary tests.
 
 ## Pull-request checklist
 
-- [ ] The change has focused tests.
-- [ ] Ruff passes.
-- [ ] Compile checks pass.
-- [ ] Pytest passes on the minimum Python version.
-- [ ] User-visible behavior is reflected in `README.md`.
-- [ ] Architectural behavior is reflected in `ARCHITECTURE.md`.
-- [ ] Notable changes are added under `Unreleased` in `CHANGELOG.md`.
+- [ ] Focused tests cover success and nearby failure cases.
+- [ ] Ruff, compile checks, and Pytest pass.
+- [ ] User-visible behavior is documented in `README.md`.
+- [ ] Design changes are reflected in `ARCHITECTURE.md`.
+- [ ] Notable changes are recorded in `CHANGELOG.md`.
 - [ ] No command path bypasses Hermes terminal dispatch.
-
-## Commit style
-
-Use focused imperative messages:
-
-```text
-fix: invalidate cache after project writes
-test: cover unsafe git tag variants
-docs: clarify direct terminal guard
-```
+- [ ] No raw terminal output is persisted.
 
 ## Security issues
 
-Do not publish exploit details in a normal issue. Follow [SECURITY.md](SECURITY.md) for private reporting guidance.
+Do not publish exploit details in a normal issue. Follow [SECURITY.md](SECURITY.md).
