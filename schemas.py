@@ -60,7 +60,7 @@ EXEC_FUSE = {
             "parallel": {
                 "type": "boolean",
                 "description": (
-                    "Run ready read-only commands concurrently, with at most eight workers. "
+                    "Run ready read-only commands concurrently. The process-wide worker cap is configurable. "
                     "Mutating and unknown commands remain sequential. Default true."
                 ),
             },
@@ -81,7 +81,7 @@ EXEC_FUSE = {
                 "maximum": 20000,
                 "description": (
                     "Maximum compact output retained per command. Important diagnostic lines are prioritized. "
-                    "Default 4000."
+                    "The process default is configurable."
                 ),
             },
         },
@@ -92,8 +92,26 @@ EXEC_FUSE = {
 EXEC_FUSE_STATS = {
     "name": "exec_fuse_stats",
     "description": (
-        "Return Hermes Exec Fuse metrics for the current task/session: workspace generation, active cache entries, "
-        "executions, cache hits, normalized duplicate hits, avoided terminal calls, and estimated characters saved."
+        "Return Hermes Exec Fuse metrics and active non-secret configuration for the current task/session: "
+        "workspace generation, cache entries, executions by classification, failures, reuse rate, compression ratio, "
+        "average execution time, avoided terminal calls, and estimated characters saved."
     ),
     "parameters": {"type": "object", "properties": {}},
+}
+
+EXEC_FUSE_CLEAR_CACHE = {
+    "name": "exec_fuse_clear_cache",
+    "description": (
+        "Clear cached terminal reads for the current Hermes task/session and advance the workspace generation. "
+        "Use this when external changes may have made cached reads stale."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "reset_metrics": {
+                "type": "boolean",
+                "description": "Also reset session execution and savings metrics. Default false.",
+            }
+        },
+    },
 }
