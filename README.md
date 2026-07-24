@@ -2,14 +2,34 @@
 
 **Batch once. Reuse safe results. Keep terminal noise out of the agent context.**
 
-Hermes Exec Fuse is a native [Hermes Agent](https://github.com/NousResearch/hermes-agent) plugin for reducing redundant shell work. It gives the model one structured tool for batching foreground commands, safely reusing exact read-only results, preventing duplicate terminal calls, and compacting large outputs before they return to the model.
+Hermes Exec Fuse is a native [Hermes Agent](https://github.com/NousResearch/hermes-agent) plugin that reduces redundant terminal work. It batches foreground commands, parallelizes only positively recognized read-only inspections, reuses exact safe results, invalidates stale reads after mutations, and compacts oversized output before it reaches the model.
 
 > [!IMPORTANT]
-> Status: **alpha**. The core behavior is covered by automated tests, but broader end-to-end validation across Hermes versions and terminal backends is still in progress.
+> Version **0.2.0** remains alpha software. The runtime is covered by automated tests across Python 3.10–3.13, but compatibility still needs broader validation across Hermes releases and terminal backends.
+
+## Install
+
+```bash
+hermes plugins install agentpixelated/hermes-exec-fuse --enable
+```
+
+Restart Hermes and verify:
+
+```text
+/plugins
+```
+
+Manual installation:
+
+```bash
+git clone https://github.com/agentpixelated/hermes-exec-fuse.git \
+  ~/.hermes/plugins/hermes-exec-fuse
+hermes plugins enable hermes-exec-fuse
+```
 
 ## Why this exists
 
-Tool-using agents often spend extra iterations and context tokens on patterns such as:
+Agents often inspect repositories like this:
 
 ```text
 terminal("git status --short")
@@ -18,69 +38,19 @@ terminal("rg TODO")
 terminal("git status --short")  # repeated
 ```
 
-Hermes Exec Fuse turns those inspections into one deterministic batch:
+Hermes Exec Fuse turns those calls into one deterministic batch:
 
 ```text
 exec_fuse([status, diff, todos])
 ```
 
-It does not call another model to optimize commands. Classification, scheduling, caching, invalidation, and output reduction are rule-based and inspectable.
+It does not call another model to optimize commands. Classification, scheduling, caching, invalidation, failure interpretation, and output reduction are rule-based and auditable.
 
-## Highlights
+## Tools
 
-| Capability | Behavior |
-| --- | --- |
-| Command batching | Accepts up to 24 foreground commands in one tool call. |
-| Safe concurrency | Runs independent commands concurrently only when positively classified as read-only. |
-| Exact deduplication | Executes normalized exact read-only duplicates once per batch. |
-| Session cache | Reuses successful read-only results for five minutes while workspace state is unchanged. |
-| Direct-call guard | Prevents an identical cached read-only `terminal` call from running again. |
-| Dependency ordering | Supports explicit command DAGs through `depends_on`. |
-| Conservative invalidation | Mutating and unknown operations clear cached workspace reads. |
-| Output compaction | Keeps diagnostic evidence while reducing oversized terminal output. |
-| Metrics | Reports executions, cache hits, duplicate hits, avoided calls, and estimated character savings. |
-| Hermes-native execution | Every real command goes through `ctx.dispatch_tool("terminal", ...)`. |
+### `exec_fuse`
 
-Because Hermes remains the execution owner, the plugin preserves the configured terminal backend, approval checks, credentials, redaction, timeout handling, and other host behavior.
-
-## Install
-
-### Hermes plugin installer
-
-```bash
-hermes plugins install agentpixelated/hermes-exec-fuse --enable
-```
-
-Restart Hermes, then verify:
-
-```text
-/plugins
-```
-
-### Manual installation
-
-```bash
-git clone https://github.com/agentpixelated/hermes-exec-fuse.git \
-  ~/.hermes/plugins/hermes-exec-fuse
-hermes plugins enable hermes-exec-fuse
-```
-
-For discovery diagnostics:
-
-```bash
-HERMES_PLUGINS_DEBUG=1 hermes plugins list
-```
-
-## Quick start
-
-Ask Hermes:
-
-```text
-Inspect this repository efficiently. Use exec_fuse to batch git status,
-git diff --stat, TODO search, and pytest test collection.
-```
-
-Equivalent tool arguments:
+Runs one to 24 foreground terminal commands.
 
 ```json
 {
@@ -92,16 +62,67 @@ Equivalent tool arguments:
   ],
   "parallel": true,
   "cache": true,
+  "fail_fast": false,
   "max_output_chars": 4000
 }
 ```
 
-For ordered work:
+Each command supports:
+
+| Field | Required | Description |
+| --- | ---: | --- |
+| `id` | Yes | Unique identifier used by dependencies and results. |
+| `command` | Yes | Foreground command delegated to Hermes' terminal tool. |
+| `cwd` | No | Working directory applied using a safely quoted `cd -- ... &&` prefix. |
+| `timeout` | No | Timeout in seconds, clamped to 1–600. |
+| `depends_on` | No | IDs that must finish successfully first. |
+| `cache` | No | Set `false` when a fresh read is required. |
+
+Batch options:
+
+| Option | Default | Description |
+| --- | ---: | --- |
+| `parallel` | `true` | Run ready read-only commands concurrently. |
+| `cache` | `true` | Reuse eligible session-scoped read-only results. |
+| `fail_fast` | `false` | Skip later ready commands after a failure. |
+| `max_output_chars` | Configured default | Per-command compact-output budget, clamped to 500–20,000. |
+
+Returned statuses are `executed`, `cache_hit`, `deduplicated`, and `skipped`.
+
+### `exec_fuse_stats`
+
+Returns current session metrics and active non-secret configuration, including:
+
+- workspace generation and generation bumps;
+- cache entries, reuse hits, duplicate hits, and avoided calls;
+- executions by command classification;
+- successful and failed executions;
+- reuse rate and compression ratio;
+- average execution duration;
+- estimated output characters saved.
+
+### `exec_fuse_clear_cache`
+
+Clears cached reads for the current task/session and advances its workspace generation.
+
+```json
+{"reset_metrics": false}
+```
+
+Use this after changes made outside the observed Hermes process. Set `reset_metrics` to `true` to start a fresh session measurement window.
+
+## Ordered work
+
+Use `depends_on` whenever order matters:
 
 ```json
 {
   "commands": [
-    {"id": "generate", "command": "python generate.py"},
+    {
+      "id": "generate",
+      "command": "python generate.py",
+      "cache": false
+    },
     {
       "id": "inspect",
       "command": "git diff --stat",
@@ -112,32 +133,7 @@ For ordered work:
 }
 ```
 
-## Tools
-
-### `exec_fuse`
-
-Runs one to 24 foreground terminal commands and returns compact structured results.
-
-| Argument | Type | Default | Description |
-| --- | --- | --- | --- |
-| `commands` | array | required | Command objects with unique IDs. |
-| `parallel` | boolean | `true` | Run ready read-only commands concurrently, capped at eight workers. |
-| `cache` | boolean | `true` | Enable session-scoped reuse for eligible read-only commands. |
-| `fail_fast` | boolean | `false` | Skip later ready commands after a failure. Failed dependencies always cause skips. |
-| `max_output_chars` | integer | `4000` | Per-command compact-output budget, clamped to 500–20,000 characters. |
-
-Each command supports `id`, `command`, optional `cwd`, `timeout`, `depends_on`, and a per-command `cache` override.
-
-Returned statuses:
-
-- `executed`
-- `cache_hit`
-- `deduplicated`
-- `skipped`
-
-### `exec_fuse_stats`
-
-Returns session-scoped workspace generation, cache size, executions, reuse counters, avoided calls, raw and returned character counts, and estimated characters saved.
+The generation command is treated as mutating or unknown, runs sequentially, and invalidates earlier workspace reads before the inspection runs.
 
 ## Execution policy
 
@@ -147,65 +143,98 @@ Returns session-scoped workspace generation, cache size, executions, reuse count
 | `mutating` | No | No | No | Yes |
 | `unknown` | No | No | No | Yes |
 
-The classifier intentionally fails closed. Commands involving interpreters, package managers, network tools, shell redirection, command substitution, unknown Git actions, or ambiguous shell behavior are not cached or parallelized.
+The classifier intentionally fails closed. A false negative costs performance; a false positive could parallelize unsafe work or reuse stale data.
 
-Unknown commands remain executable through Hermes; they simply run sequentially and advance the workspace generation afterward.
+Commands involving interpreters, package managers, network tools, shell redirection, command substitution, unknown Git operations, or ambiguous syntax are not cached or parallelized. Unknown commands remain executable through Hermes and continue to use its normal security controls.
+
+## Terminal failure detection
+
+Version 0.2.0 recognizes structured failure signals commonly returned by terminal backends:
+
+- truthy `error`;
+- `ok: false` or `success: false`;
+- non-zero `exit_code`, `return_code`, or `returncode`;
+- statuses such as `failed`, `error`, `cancelled`, or `timed_out`.
+
+Ordinary unstructured terminal text is not scanned for failure keywords because doing so could misclassify logs or source code. Failed reads are counted in metrics but never cached, and dependent commands are skipped.
+
+## Runtime configuration
+
+Configuration is read once when the plugin loads.
+
+| Environment variable | Default | Bounds / meaning |
+| --- | ---: | --- |
+| `HERMES_EXEC_FUSE_TTL_SECONDS` | `300` | `0–3600`; `0` disables result reuse. |
+| `HERMES_EXEC_FUSE_MAX_ENTRIES` | `128` | `1–2048` cache entries per session. |
+| `HERMES_EXEC_FUSE_MAX_SESSIONS` | `64` | `1–512` tracked sessions. |
+| `HERMES_EXEC_FUSE_MAX_WORKERS` | `8` | `1–32` concurrent read-only workers. |
+| `HERMES_EXEC_FUSE_DEFAULT_OUTPUT_CHARS` | `4000` | `500–20000` default output budget. |
+| `HERMES_EXEC_FUSE_DIRECT_GUARD` | `true` | Block repeated direct read-only terminal calls. |
+| `HERMES_EXEC_FUSE_INJECT_HINT` | `true` | Inject a short batching hint before model calls. |
+
+Boolean values accept `true/false`, `yes/no`, `on/off`, and `1/0`. Invalid values fall back to safe defaults; numeric values are clamped.
+
+Example:
+
+```bash
+export HERMES_EXEC_FUSE_TTL_SECONDS=120
+export HERMES_EXEC_FUSE_MAX_WORKERS=4
+export HERMES_EXEC_FUSE_DEFAULT_OUTPUT_CHARS=6000
+```
+
+Restart Hermes after changing these values.
 
 ## Cache model
 
 Cache identity includes:
 
 ```text
-normalized command + cwd + relevant options + workspace generation
+normalized command + cwd + timeout options + workspace generation
 ```
 
-Default limits:
+State is:
 
-- five-minute TTL;
-- 128 entries per session;
-- 64 tracked sessions;
-- in-memory storage only.
+- scoped to the active task/session;
+- in memory only;
+- bounded by entries and session count;
+- expired by TTL;
+- cleared after known or possible mutations.
 
 Known mutation surfaces include mutating or unknown terminal commands and Hermes tools such as `write_file`, `patch`, `execute_code`, and `skill_manage`.
 
 ## Output compaction
 
-Oversized output is reduced deterministically by preserving:
+When output exceeds its budget, the deterministic compactor preserves:
 
 1. the first 24 lines;
-2. up to 36 middle lines containing error, failure, warning, traceback, assertion, timeout, pass, or success signals;
+2. up to 36 middle lines containing errors, failures, warnings, tracebacks, assertions, timeouts, passes, or successes;
 3. the final 18 lines;
 4. a marker containing original line and character counts.
 
-The plugin does not persist a separate archive of full raw terminal output.
+ANSI sequences are removed. JSON-like string values are compacted recursively and lists are capped at 100 items. The plugin does not retain a separate full-output archive.
 
 ## Safety boundary
 
-- No direct `subprocess`, `os.system`, or shell execution inside the plugin.
-- Every actual command is dispatched through Hermes' registered `terminal` tool.
-- Only positively recognized reads can run concurrently or be reused.
-- Mutating and unknown commands remain sequential.
-- Background and interactive commands are outside the current scope.
-- Invalid batches and dependency cycles return structured errors.
+Every actual command is executed through:
 
-The classifier is a performance and stale-data safeguard, **not** an authorization system. Hermes' normal security controls remain authoritative.
+```python
+ctx.dispatch_tool("terminal", ...)
+```
 
-## Known limitations
+The plugin never invokes `subprocess`, `os.system`, or a shell directly. Hermes therefore remains responsible for approvals, credentials, redaction, configured terminal backends, timeout handling, and operating-system permissions.
 
-- Alpha compatibility has not yet been validated against every Hermes release or terminal backend.
-- Many safe but unrecognized commands intentionally fall back to `unknown`.
-- Cache state does not survive Hermes restarts.
-- External filesystem changes cannot be observed automatically.
-- Direct duplicate prevention uses a `pre_tool_call` block response because the current hook API cannot transparently substitute a successful result.
-- Savings metrics count characters, not tokenizer-specific tokens.
+The classifier is a performance and stale-data safeguard, **not** an authorization system.
 
 ## Development
 
 ```bash
 python -m pip install --upgrade pytest ruff
-ruff check __init__.py classifier.py compressor.py executor.py schemas.py state.py tests
-python -m compileall -q __init__.py classifier.py compressor.py executor.py schemas.py state.py
+ruff check __init__.py classifier.py compressor.py config.py executor.py \
+  result_status.py schemas.py state.py tests benchmarks
+python -m compileall -q __init__.py classifier.py compressor.py config.py \
+  executor.py result_status.py schemas.py state.py
 pytest
+python benchmarks/benchmark_scheduler.py
 ```
 
 ## Project documents
@@ -216,13 +245,14 @@ pytest
 - [Security](SECURITY.md)
 - [Examples](examples)
 
-## Roadmap
+## Known limitations
 
-- End-to-end tests against real Hermes installations.
-- Compatibility validation across terminal backends.
-- Configurable cache limits and classifier extensions.
-- Tokenizer-aware benchmarks using real agent traces.
-- Tagged releases and a stable `1.0` contract.
+- Alpha compatibility has not been validated against every Hermes version or terminal backend.
+- Safe-but-unrecognized commands intentionally fall back to `unknown`.
+- External filesystem changes cannot be detected automatically.
+- Cache state does not survive process restarts.
+- Direct duplicate prevention uses a `pre_tool_call` block response rather than transparent result substitution.
+- Savings metrics count characters, not tokenizer-specific tokens.
 
 ## License
 

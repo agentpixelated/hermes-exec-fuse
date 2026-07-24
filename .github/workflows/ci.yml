@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
       - name: Check out repository
@@ -35,13 +35,21 @@ jobs:
         run: python -m pip install --upgrade pip pytest ruff
 
       - name: Lint
-        run: ruff check __init__.py classifier.py compressor.py executor.py schemas.py state.py tests
+        run: >-
+          ruff check __init__.py classifier.py compressor.py config.py executor.py
+          result_status.py schemas.py state.py tests benchmarks
 
       - name: Compile plugin
-        run: python -m compileall -q __init__.py classifier.py compressor.py executor.py schemas.py state.py
+        run: >-
+          python -m compileall -q __init__.py classifier.py compressor.py config.py
+          executor.py result_status.py schemas.py state.py
 
       - name: Run tests
         run: pytest 2>&1 | tee pytest.log
+
+      - name: Benchmark smoke test
+        if: matrix.python-version == '3.13'
+        run: python benchmarks/benchmark_scheduler.py
 
       - name: Upload pytest failure log
         if: failure()

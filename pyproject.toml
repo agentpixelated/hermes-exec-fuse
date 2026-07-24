@@ -1,6 +1,6 @@
 [project]
 name = "hermes-exec-fuse"
-version = "0.1.0"
+version = "0.2.0"
 description = "A native Hermes Agent plugin for batching terminal commands, reusing safe results, and reducing tool output."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -15,6 +15,7 @@ classifiers = [
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
 ]
 
 [tool.pytest.ini_options]
@@ -29,4 +30,7 @@ target-version = "py310"
 select = ["E", "F", "I", "B"]
 
 [tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["E402"]
+"benchmarks/benchmark_scheduler.py" = ["E402"]
+"state.py" = ["E501"]
 "tests/test_hermes_exec_fuse.py" = ["E402"]

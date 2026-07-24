@@ -31,11 +31,16 @@ class SessionState:
     generation: int = 0
     cache: OrderedDict[str, CacheEntry] = field(default_factory=OrderedDict)
     executed: int = 0
+    executed_ok: int = 0
+    executed_failed: int = 0
+    executions_by_class: dict[str, int] = field(default_factory=dict)
     cache_hits: int = 0
     duplicate_hits: int = 0
     avoided_calls: int = 0
     raw_chars: int = 0
     returned_chars: int = 0
+    total_duration_ms: int = 0
+    generation_bumps: int = 0
 
 
 class FuseState:
@@ -94,7 +99,7 @@ class FuseState:
             entry = session.cache.get(fingerprint)
             if entry is None:
                 return None
-            if time.monotonic() - entry.created_at > self.ttl_seconds:
+            if self.ttl_seconds <= 0 or time.monotonic() - entry.created_at > self.ttl_seconds:
                 session.cache.pop(fingerprint, None)
                 return None
             session.cache.move_to_end(fingerprint)
@@ -102,6 +107,8 @@ class FuseState:
 
     def put(self, key: str, entry: CacheEntry) -> None:
         with self._lock:
+            if self.ttl_seconds <= 0 or self.max_entries <= 0:
+                return
             session = self._session(key)
             session.cache[entry.fingerprint] = entry
             session.cache.move_to_end(entry.fingerprint)
@@ -112,15 +119,48 @@ class FuseState:
         with self._lock:
             session = self._session(key)
             session.generation += 1
+            session.generation_bumps += 1
             session.cache.clear()
             return session.generation
 
-    def record_execution(self, key: str, raw_chars: int, returned_chars: int) -> None:
+    def clear_session(self, key: str, reset_metrics: bool = False) -> dict[str, int]:
+        with self._lock:
+            session = self._session(key)
+            removed = len(session.cache)
+            generation_before = session.generation
+            if reset_metrics:
+                self._sessions[self.session_key(key)] = SessionState(
+                    generation=generation_before + 1,
+                    generation_bumps=1,
+                )
+            else:
+                session.cache.clear()
+                session.generation += 1
+                session.generation_bumps += 1
+            return {
+                "removed_entries": removed,
+                "generation_before": generation_before,
+                "generation_after": generation_before + 1,
+            }
+
+    def record_execution(
+        self,
+        key: str,
+        raw_chars: int,
+        returned_chars: int,
+        classification: str = "unknown",
+        duration_ms: int = 0,
+        ok: bool = True,
+    ) -> None:
         with self._lock:
             session = self._session(key)
             session.executed += 1
+            session.executed_ok += int(ok)
+            session.executed_failed += int(not ok)
+            session.executions_by_class[classification] = session.executions_by_class.get(classification, 0) + 1
             session.raw_chars += max(raw_chars, 0)
             session.returned_chars += max(returned_chars, 0)
+            session.total_duration_ms += max(duration_ms, 0)
 
     def record_hit(self, key: str, entry: CacheEntry, duplicate: bool = False) -> None:
         with self._lock:
@@ -138,4 +178,12 @@ class FuseState:
             data["cache_entries"] = len(session.cache)
             data.pop("cache", None)
             data["estimated_chars_saved"] = max(0, session.raw_chars - session.returned_chars)
+            attempts = session.executed + session.avoided_calls
+            data["reuse_rate"] = round(session.avoided_calls / attempts, 4) if attempts else 0.0
+            data["compression_ratio"] = (
+                round(session.returned_chars / session.raw_chars, 4) if session.raw_chars else 1.0
+            )
+            data["average_execution_ms"] = (
+                round(session.total_duration_ms / session.executed, 2) if session.executed else 0.0
+            )
             return data

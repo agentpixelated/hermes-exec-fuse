@@ -12,6 +12,8 @@ from typing import Any
 
 from .classifier import CommandClass, classify_command
 from .compressor import compact_result
+from .config import FuseConfig
+from .result_status import ResultAssessment, assess_terminal_result
 from .state import CacheEntry, FuseState
 
 _INTERNAL_DISPATCH = threading.local()
@@ -40,9 +42,10 @@ class CommandSpec:
 
 
 class ExecFuseRuntime:
-    def __init__(self, ctx: Any, state: FuseState):
+    def __init__(self, ctx: Any, state: FuseState, config: FuseConfig | None = None):
         self.ctx = ctx
         self.state = state
+        self.config = config or FuseConfig()
 
     @staticmethod
     def _parse_specs(items: Any) -> list[CommandSpec]:
@@ -67,14 +70,16 @@ class ExecFuseRuntime:
             if timeout is not None:
                 timeout = max(1, min(600, int(timeout)))
             depends_on = tuple(str(dep).strip() for dep in item.get("depends_on", []) if str(dep).strip())
-            specs.append(CommandSpec(
-                id=command_id,
-                command=command,
-                cwd=str(item.get("cwd", "")).strip(),
-                timeout=timeout,
-                depends_on=depends_on,
-                cache=bool(item.get("cache", True)),
-            ))
+            specs.append(
+                CommandSpec(
+                    id=command_id,
+                    command=command,
+                    cwd=str(item.get("cwd", "")).strip(),
+                    timeout=timeout,
+                    depends_on=depends_on,
+                    cache=bool(item.get("cache", True)),
+                )
+            )
 
         known = {spec.id for spec in specs}
         for spec in specs:
@@ -96,20 +101,22 @@ class ExecFuseRuntime:
         return payload
 
     @staticmethod
+    def _assessment(raw: Any) -> ResultAssessment:
+        return assess_terminal_result(raw)
+
+    @staticmethod
     def _failed(raw: Any) -> bool:
-        if isinstance(raw, dict):
-            return bool(raw.get("error"))
-        if isinstance(raw, str):
-            try:
-                parsed = json.loads(raw)
-            except json.JSONDecodeError:
-                return False
-            return isinstance(parsed, dict) and bool(parsed.get("error"))
-        return False
+        """Backward-compatible boolean wrapper used by hooks and integrations."""
+        return not assess_terminal_result(raw).ok
 
     def _run_one(self, spec: CommandSpec, session_key: str, cache_enabled: bool, max_chars: int) -> dict[str, Any]:
         classification = spec.classification
-        can_cache = cache_enabled and spec.cache and classification == CommandClass.READ_ONLY
+        can_cache = (
+            self.config.cache_available
+            and cache_enabled
+            and spec.cache
+            and classification == CommandClass.READ_ONLY
+        )
         fingerprint = self.state.fingerprint(session_key, spec.command, spec.cwd, spec.options)
         if can_cache:
             cached = self.state.get(session_key, fingerprint)
@@ -130,11 +137,11 @@ class ExecFuseRuntime:
         try:
             _INTERNAL_DISPATCH.active = True
             raw = self.ctx.dispatch_tool("terminal", self._terminal_args(spec))
-            ok = not self._failed(raw)
+            assessment = self._assessment(raw)
             error = None
         except Exception as exc:
             raw = {"error": f"terminal dispatch failed: {exc}"}
-            ok = False
+            assessment = ResultAssessment(ok=False, reason=str(exc))
             error = str(exc)
         finally:
             _INTERNAL_DISPATCH.active = False
@@ -142,22 +149,31 @@ class ExecFuseRuntime:
         duration_ms = round((time.monotonic() - started) * 1000)
         raw_text = raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False, default=str)
         compact = compact_result(raw_text, max_chars)
-        self.state.record_execution(session_key, len(raw_text), len(compact))
+        self.state.record_execution(
+            session_key,
+            len(raw_text),
+            len(compact),
+            classification=classification.value,
+            duration_ms=duration_ms,
+            ok=assessment.ok,
+        )
 
         if classification != CommandClass.READ_ONLY and self.state.generation(session_key) == generation_before:
             self.state.bump_generation(session_key)
-        elif can_cache and ok:
-            entry = CacheEntry(
-                fingerprint=fingerprint,
-                command=spec.command,
-                compact_output=compact,
-                raw_chars=len(raw_text),
-                compact_chars=len(compact),
-                generation=generation_before,
-                source="exec_fuse",
-                duration_ms=duration_ms,
+        elif can_cache and assessment.ok:
+            self.state.put(
+                session_key,
+                CacheEntry(
+                    fingerprint=fingerprint,
+                    command=spec.command,
+                    compact_output=compact,
+                    raw_chars=len(raw_text),
+                    compact_chars=len(compact),
+                    generation=generation_before,
+                    source="exec_fuse",
+                    duration_ms=duration_ms,
+                ),
             )
-            self.state.put(session_key, entry)
 
         result = {
             "id": spec.id,
@@ -166,8 +182,12 @@ class ExecFuseRuntime:
             "fingerprint": fingerprint[:12],
             "output": compact,
             "duration_ms": duration_ms,
-            "ok": ok,
+            "ok": assessment.ok,
         }
+        if assessment.reason:
+            result["failure_reason"] = assessment.reason
+        if assessment.exit_code is not None:
+            result["exit_code"] = assessment.exit_code
         if error:
             result["error"] = error
         return result
@@ -178,7 +198,10 @@ class ExecFuseRuntime:
             parallel = bool(args.get("parallel", True))
             cache_enabled = bool(args.get("cache", True))
             fail_fast = bool(args.get("fail_fast", False))
-            max_chars = max(500, min(20000, int(args.get("max_output_chars", 4000))))
+            max_chars = max(
+                500,
+                min(20000, int(args.get("max_output_chars", self.config.default_output_chars))),
+            )
             session_key = self.state.session_key(kwargs.get("task_id") or kwargs.get("session_id"))
 
             canonical: dict[str, str] = {}
@@ -219,7 +242,7 @@ class ExecFuseRuntime:
                 executable: list[CommandSpec] = []
                 for spec in ready:
                     dependency_failed = any(not results[dep].get("ok", False) for dep in spec.depends_on)
-                    if fail_fast and failed_any or dependency_failed:
+                    if (fail_fast and failed_any) or dependency_failed:
                         results[spec.id] = {
                             "id": spec.id,
                             "status": "skipped",
@@ -261,7 +284,10 @@ class ExecFuseRuntime:
                 sequential = [spec for spec in executable if spec.classification != CommandClass.READ_ONLY]
 
                 if parallel and len(read_only) > 1:
-                    with ThreadPoolExecutor(max_workers=min(8, len(read_only)), thread_name_prefix="exec-fuse") as pool:
+                    with ThreadPoolExecutor(
+                        max_workers=min(self.config.max_workers, len(read_only)),
+                        thread_name_prefix="exec-fuse",
+                    ) as pool:
                         futures = {
                             pool.submit(self._run_one, spec, session_key, cache_enabled, max_chars): spec
                             for spec in read_only
@@ -279,7 +305,12 @@ class ExecFuseRuntime:
                     if spec.id not in pending:
                         continue
                     if fail_fast and failed_any:
-                        results[spec.id] = {"id": spec.id, "status": "skipped", "reason": "fail_fast", "ok": False}
+                        results[spec.id] = {
+                            "id": spec.id,
+                            "status": "skipped",
+                            "reason": "fail_fast",
+                            "ok": False,
+                        }
                     else:
                         results[spec.id] = self._run_one(spec, session_key, cache_enabled, max_chars)
                     pending.pop(spec.id, None)
@@ -287,21 +318,50 @@ class ExecFuseRuntime:
 
             ordered = [results[spec.id] for spec in specs]
             counts: dict[str, int] = {}
+            classifications: dict[str, int] = {}
+            total_duration_ms = 0
             for result in ordered:
                 counts[result["status"]] = counts.get(result["status"], 0) + 1
-            return json.dumps({
-                "ok": all(result.get("ok", False) for result in ordered),
-                "summary": {
-                    "total": len(ordered),
-                    "statuses": counts,
-                    "workspace_generation": self.state.generation(session_key),
+                classification = result.get("classification")
+                if classification:
+                    classifications[classification] = classifications.get(classification, 0) + 1
+                total_duration_ms += int(result.get("duration_ms", 0))
+            return json.dumps(
+                {
+                    "ok": all(result.get("ok", False) for result in ordered),
+                    "summary": {
+                        "total": len(ordered),
+                        "statuses": counts,
+                        "classifications": classifications,
+                        "duration_ms_total": total_duration_ms,
+                        "workspace_generation": self.state.generation(session_key),
+                    },
+                    "results": ordered,
                 },
-                "results": ordered,
-            }, ensure_ascii=False, separators=(",", ":"))
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
         except Exception as exc:
             return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
 
     def stats(self, args: dict[str, Any], **kwargs: Any) -> str:
         del args
         session_key = self.state.session_key(kwargs.get("task_id") or kwargs.get("session_id"))
-        return json.dumps({"session": session_key, **self.state.snapshot(session_key)}, separators=(",", ":"))
+        return json.dumps(
+            {"session": session_key, "config": self.config.snapshot(), **self.state.snapshot(session_key)},
+            separators=(",", ":"),
+        )
+
+    def clear_cache(self, args: dict[str, Any], **kwargs: Any) -> str:
+        session_key = self.state.session_key(kwargs.get("task_id") or kwargs.get("session_id"))
+        reset_metrics = bool(args.get("reset_metrics", False))
+        change = self.state.clear_session(session_key, reset_metrics=reset_metrics)
+        return json.dumps(
+            {
+                "ok": True,
+                "session": session_key,
+                "reset_metrics": reset_metrics,
+                **change,
+            },
+            separators=(",", ":"),
+        )
